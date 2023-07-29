@@ -11,7 +11,9 @@ tmp/
 # Environment variables
 .env
 
-.idea
+
+# idea folder
+.idea/
 
 # Binaries for programs and plugins
 *.exe
@@ -23,8 +25,6 @@ tmp/
 # Test binary, built with `go test -c`
 *.test
 
-# Mongo Explorer plugin
-.idea/**/mongoSettings.xml
 
 # File-based project format
 *.iws
