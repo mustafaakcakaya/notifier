@@ -13,14 +13,18 @@ const (
 	currency        = "USDT"
 	rsiPeriod       = 14
 	bbPeriod        = 20
-	bbStdDevUp      = 2.0
-	bbStdDevDn      = 2.0
 	closePriceLimit = 100
 )
 
 var closePrices []float64
 
 func main() {
+	err, closeFunc := InitAudioPlayers()
+	if err != nil {
+		panic(err)
+	}
+	defer closeFunc()
+
 	PrintASCII()
 	//TODO: ensure data is getting from futures, not spot market
 	//TODO: test algorithm with futures
@@ -44,6 +48,16 @@ func main() {
 	}()
 
 	<-doneCh
+}
+
+func InitAudioPlayers() (error, func()) {
+	err := InitPlayers()
+	if err != nil {
+		fmt.Println("Error initializing audio player:", err)
+		return err, nil
+	}
+
+	return err, ClosePlayers
 }
 
 func wsDepthHandler(event *binance_connector.WsDepthEvent) {
@@ -82,7 +96,7 @@ func wsDepthHandler(event *binance_connector.WsDepthEvent) {
 	}
 }
 
-var lastRsi float64 // Variable to store the last printed RSI value
+var previousRsi float64 // Variable to store the last printed RSI value
 
 func RsiDivergenceAnalysis(rsiData []float64, price float64) {
 	// Get the current RSI value
@@ -92,22 +106,21 @@ func RsiDivergenceAnalysis(rsiData []float64, price float64) {
 	now := GetFormattedNow()
 
 	// Check for RSI divergence
-	if currentRsi < 30 && currentRsi > lastRsi {
-		logMessage := fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, lastRsi, now)
-		fmt.Println(logMessage)
-	} else if currentRsi > 70 && currentRsi < lastRsi {
-		logMessage := fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, lastRsi, now)
-		fmt.Println(logMessage)
+	if currentRsi < 30 && currentRsi > previousRsi {
+		fmt.Println(fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+			price, currentRsi, previousRsi, now))
+		ResumeBuyPlayer()
+	} else if currentRsi > 70 && currentRsi < previousRsi {
+		fmt.Println(fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+			price, currentRsi, previousRsi, now))
 	} else {
-		logMessage := fmt.Sprintf("Just wait, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, lastRsi, now)
-		fmt.Println(logMessage)
+		fmt.Println(fmt.Sprintf("Just wait, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+			price, currentRsi, previousRsi, now))
+		PausePlayers()
 	}
 
-	// Update the lastRsi variable with the current RSI value
-	lastRsi = currentRsi
+	// Update the previousRsi variable with the current RSI value
+	previousRsi = currentRsi
 }
 
 func GetFormattedNow() string {
