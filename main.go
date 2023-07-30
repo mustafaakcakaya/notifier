@@ -1,98 +1,94 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/binance/binance-connector-go"
 	"github.com/markcheno/go-talib"
+	"io/ioutil"
+	"net/http"
 	"strconv"
 	"time"
 )
 
 const (
-	cryptoCurrency  = "BTC"
-	currency        = "USDT"
-	rsiPeriod       = 14
-	bbPeriod        = 20
-	closePriceLimit = 100
+	cryptoCurrency      = "BTC"
+	currency            = "USDT"
+	requestPeriodSecond = 5
+	rsiPeriod           = 14
+	bbPeriod            = 20
+	closePriceLimit     = 100
 )
 
 var closePrices []float64
 
 func main() {
+	//DONE: ensure data is getting from futures/binance, not spot/binance market
+	//TODO: test the algorithm with futures
+	//TODO: connect to binance to auto buy and sell algorithm.
+	//TODO: write test codes.
+
+	PrintASCII()
 	err, closeFunc := InitAudioPlayers()
 	if err != nil {
-		panic(err)
+		return
 	}
 	defer closeFunc()
 
-	PrintASCII()
-	//TODO: ensure data is getting from futures, not spot market
-	//TODO: test algorithm with futures
-	//TODO: connect to binance to auto buy and sell algorithm.
-	websocketStreamClient := binance_connector.NewWebsocketStreamClient(false, "wss://testnet.binance.vision")
+	apiURL := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s%s", cryptoCurrency, currency)
 
-	errHandler := func(err error) {
-		fmt.Println(err)
-	}
+	for {
+		// Make a GET request to Binance API
+		resp, err := http.Get(apiURL)
+		if err != nil {
+			fmt.Println("Error fetching data:", err)
+			return
+		}
+		defer resp.Body.Close()
 
-	// Depth stream subscription
-	doneCh, stopCh, err := websocketStreamClient.WsDepthServe(cryptoCurrency+currency, wsDepthHandler, errHandler)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+		// Read the response body
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return
+		}
 
-	go func() {
-		time.Sleep(30 * time.Second)
-		stopCh <- struct{}{} // use stopCh to stop streaming
-	}()
+		// Unmarshal the JSON response
+		var tickerData struct {
+			LastPrice string `json:"lastPrice"`
+		}
+		if err := json.Unmarshal(body, &tickerData); err != nil {
+			fmt.Println("Error decoding JSON:", err)
+			return
+		}
 
-	<-doneCh
-}
+		// Parse the last price as a float64
+		lastPrice, err := strconv.ParseFloat(tickerData.LastPrice, 64)
+		if err != nil {
+			fmt.Println("Error parsing last price:", err)
+			return
+		}
 
-func InitAudioPlayers() (error, func()) {
-	err := InitPlayers()
-	if err != nil {
-		fmt.Println("Error initializing audio player:", err)
-		return err, nil
-	}
+		// Append closePrices (this is not actually closePrice, just data at a moment)
+		closePrices = append(closePrices, lastPrice)
 
-	return err, ClosePlayers
-}
+		// Limit closePrices to closePriceLimit elements
+		if len(closePrices) > closePriceLimit {
+			closePrices = closePrices[len(closePrices)-closePriceLimit:]
+		}
 
-func wsDepthHandler(event *binance_connector.WsDepthEvent) {
-	if len(event.Bids) == 0 {
-		return
-	}
+		// Perform analysis and print results
+		if len(closePrices) >= rsiPeriod && len(closePrices) >= bbPeriod {
+			// RSI calculation
+			rsiData := talib.Rsi(closePrices, rsiPeriod)
 
-	lastPriceStr := event.Bids[0].Price
-	lastPrice, _ := strconv.ParseFloat(lastPriceStr, 64)
+			// RSI Divergence analysis:
+			RsiDivergenceAnalysis(rsiData, lastPrice)
+		} else {
+			fmt.Printf("Collecting Data... btc price: %.2f\n", lastPrice)
+		}
 
-	// Append closePrices (this is not actually closePrice, just data in a moment)
-	closePrices = append(closePrices, lastPrice)
-
-	// Limit closePrices to closePriceLimit elements
-	if len(closePrices) > closePriceLimit {
-		closePrices = closePrices[len(closePrices)-closePriceLimit:]
-	}
-
-	// Perform analysis and print results
-	if len(closePrices) >= rsiPeriod && len(closePrices) >= bbPeriod {
-		// RSI calculation
-		rsiData := talib.Rsi(closePrices, rsiPeriod)
-
-		/*// Bollinger Bands calculation
-		bbUpper, bbMiddle, bbLower := talib.BBands(closePrices, bbPeriod, bbStdDevUp, bbStdDevDn, talib.SMA)
-
-		// Log results for the latest entry
-		i := len(closePrices) - 1
-		currentRsi := rsiData[i]
-		fmt.Printf("Close: %.2f, RSI: %.2f, BB Upper: %.2f, BB Middle: %.2f, BB Lower: %.2f\n", closePrices[i], currentRsi, bbUpper[i], bbMiddle[i], bbLower[i])*/
-
-		// RSI Divergence analysis:
-		RsiDivergenceAnalysis(rsiData, lastPrice)
-	} else {
-		fmt.Printf("Collecting Data... btc price: %.2f\n", lastPrice)
+		// Wait for a few seconds before making the next request
+		time.Sleep(requestPeriodSecond * time.Second)
 	}
 }
 
@@ -127,6 +123,15 @@ func GetFormattedNow() string {
 	return time.Now().Format("2006-01-02 15:04:05")
 }
 
+func InitAudioPlayers() (error, func()) {
+	err := InitPlayers()
+	if err != nil {
+		fmt.Println("Error initializing audio player:", err)
+		return err, nil
+	}
+
+	return err, ClosePlayers
+}
 func PrintASCII() {
 	fmt.Println("")
 	fmt.Println(" _______                                      ______           __ __           __    __            __     __  ______  __                   \n|       \\                                    /      \\         |  \\  \\         |  \\  |  \\          |  \\   |  \\/      \\|  \\                  \n| ▓▓▓▓▓▓▓\\__    __ __    __                 |  ▓▓▓▓▓▓\\ ______ | ▓▓ ▓▓         | ▓▓\\ | ▓▓ ______  _| ▓▓_   \\▓▓  ▓▓▓▓▓▓\\\\▓▓ ______   ______  \n| ▓▓__/ ▓▓  \\  |  \\  \\  |  \\     ______     | ▓▓___\\▓▓/      \\| ▓▓ ▓▓         | ▓▓▓\\| ▓▓/      \\|   ▓▓ \\ |  \\ ▓▓_  \\▓▓  \\/      \\ /      \\ \n| ▓▓    ▓▓ ▓▓  | ▓▓ ▓▓  | ▓▓    |      \\     \\▓▓    \\|  ▓▓▓▓▓▓\\ ▓▓ ▓▓         | ▓▓▓▓\\ ▓▓  ▓▓▓▓▓▓\\\\▓▓▓▓▓▓ | ▓▓ ▓▓ \\   | ▓▓  ▓▓▓▓▓▓\\  ▓▓▓▓▓▓\\\n| ▓▓▓▓▓▓▓\\ ▓▓  | ▓▓ ▓▓  | ▓▓     \\▓▓▓▓▓▓     _\\▓▓▓▓▓▓\\ ▓▓    ▓▓ ▓▓ ▓▓         | ▓▓\\▓▓ ▓▓ ▓▓  | ▓▓ | ▓▓ __| ▓▓ ▓▓▓▓   | ▓▓ ▓▓    ▓▓ ▓▓   \\▓▓\n| ▓▓__/ ▓▓ ▓▓__/ ▓▓ ▓▓__/ ▓▓                |  \\__| ▓▓ ▓▓▓▓▓▓▓▓ ▓▓ ▓▓         | ▓▓ \\▓▓▓▓ ▓▓__/ ▓▓ | ▓▓|  \\ ▓▓ ▓▓     | ▓▓ ▓▓▓▓▓▓▓▓ ▓▓      \n| ▓▓    ▓▓\\▓▓    ▓▓\\▓▓    ▓▓                 \\▓▓    ▓▓\\▓▓     \\ ▓▓ ▓▓         | ▓▓  \\▓▓▓\\▓▓    ▓▓  \\▓▓  ▓▓ ▓▓ ▓▓     | ▓▓\\▓▓     \\ ▓▓      \n \\▓▓▓▓▓▓▓  \\▓▓▓▓▓▓ _\\▓▓▓▓▓▓▓                  \\▓▓▓▓▓▓  \\▓▓▓▓▓▓▓\\▓▓\\▓▓          \\▓▓   \\▓▓ \\▓▓▓▓▓▓    \\▓▓▓▓ \\▓▓\\▓▓      \\▓▓ \\▓▓▓▓▓▓▓\\▓▓      \n                  |  \\__| ▓▓                                                                                                               \n                   \\▓▓    ▓▓                                                                                                               \n                    \\▓▓▓▓▓▓                                                                                                                \n\n \n\tBuy - Sell Notifier uygulamasına Hoşgeldiniz!\n\n\tBu program, belirtilen kripto para birimi (bitcoin) için gerçek zamanlı fiyatları alacak,\n\tRSI (Relative Strength Index) ve Bollinger Bands analizini gerçekleştirecek,\n\tve al/sat sinyalleri verecektir.\n\n\tAnaliz sonuçları, her veri güncellemesinde ekrana yazdırılacaktır.\n\n\tAnalizden çıkmak için programı durdurabilirsiniz.\n\n\tAnaliz Başladı...\n\t")
