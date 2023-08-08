@@ -6,6 +6,7 @@ import (
 	"github.com/markcheno/go-talib"
 	"io/ioutil"
 	"net/http"
+	"net/smtp"
 	"os"
 	"strconv"
 	"time"
@@ -14,11 +15,13 @@ import (
 const (
 	cryptoCurrency      = "BTC"
 	currency            = "USDT"
-	requestPeriodSecond = 1 * 60 * 15 //* 15 // request every 15 min
+	requestPeriodSecond = 1 * 60 * 15 // request every 15 min
 	rsiPeriod           = 14
 	bbPeriod            = 20
-	closePriceLimit     = 100
+	maxDataCount        = 80
 )
+
+var lastTenAnalyses []bool
 
 type AppData struct {
 	ClosePrices          []float64 `json:"closePrices"`
@@ -28,8 +31,17 @@ type AppData struct {
 	LastRequestTimestamp time.Time `json:"timestamp"`
 }
 
+var (
+	smtpHost     = "smtp.gmail.com"
+	smtpPort     = "587"
+	smtpUsername = "your.email@gmail.com"
+	smtpPassword = "your_password"
+)
+
 func main() {
 	//DONE: ensure data is getting from futures/binance, not spot/binance market
+	//TODO: delete sound alert.
+	//TODO: send signal alert when buy signal occurs.
 	//TODO: test the algorithm with futures
 	//TODO: connect to binance to auto buy and sell algorithm.
 	//TODO: write test codes.
@@ -53,6 +65,21 @@ func main() {
 	apiURL := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s%s", cryptoCurrency, currency)
 
 	for {
+		lastTenAnalyses = append(lastTenAnalyses, checkForBuySignal())
+
+		// limit to 10 to check last 10 signal
+		if len(lastTenAnalyses) > 10 {
+			lastTenAnalyses = lastTenAnalyses[1:]
+		}
+
+		// Eğer son 10 analizde buy sinyali yoksa e-posta gönder
+		if !containsBuySignal(lastTenAnalyses) {
+			err := sendEmail(smtpHost, smtpPort, smtpUsername, smtpPassword)
+			if err != nil {
+				fmt.Println("Error sending email:", err)
+			}
+		}
+
 		// Check if the last request was less than 15 minutes ago
 		elapsedTime := time.Since(data.LastRequestTimestamp)
 		remainingTime := requestPeriodSecond - int(elapsedTime.Seconds())
@@ -94,14 +121,6 @@ func main() {
 			return
 		}
 
-		// Append closePrices (this is not actually closePrice, just data at a moment)
-		data.ClosePrices = append(data.ClosePrices, lastPrice)
-
-		// Limit closePrices to closePriceLimit elements
-		if len(data.ClosePrices) > closePriceLimit {
-			data.ClosePrices = data.ClosePrices[len(data.ClosePrices)-closePriceLimit:]
-		}
-
 		// Perform analysis and print results
 		if len(data.ClosePrices) >= rsiPeriod && len(data.ClosePrices) >= bbPeriod {
 			// RSI calculation
@@ -122,14 +141,16 @@ func main() {
 		data.LastRequestTimestamp = time.Now()
 		// Update the data with the current values
 		data.ClosePrices = append(data.ClosePrices, lastPrice)
-		if len(data.ClosePrices) > closePriceLimit {
-			data.ClosePrices = data.ClosePrices[len(data.ClosePrices)-closePriceLimit:]
-		}
 		data.PreviousRsi = previousRsi
 
+		// Limit closePrices to closePriceLimit elements
+		if len(data.ClosePrices) > maxDataCount {
+			data.ClosePrices = data.ClosePrices[len(data.ClosePrices)-maxDataCount:]
+		}
+
 		// Save the updated data to the JSON file
-		err = saveDataToJSON(data)
-		if err != nil {
+		e := saveDataToJSON(data)
+		if e != nil {
 			fmt.Println("Error saving data to JSON:", err)
 		}
 
@@ -219,4 +240,29 @@ func saveDataToJSON(data *AppData) error {
 	encoder.SetIndent("", "    ") // Format the JSON for readability
 	err = encoder.Encode(data)
 	return err
+}
+
+func sendEmail(smtpHost, smtpPort, smtpUsername, smtpPassword string) error {
+	auth := smtp.PlainAuth("", smtpUsername, smtpPassword, smtpHost)
+	to := []string{"alici.mail.adresi@gmail.com"} // E-posta alıcısı adresi
+	msg := []byte("Subject: Buy Signal Notification\n\nNo buy signals in the last 10 analyses.")
+
+	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUsername, to, msg)
+	return err
+}
+
+func containsBuySignal(lastTenAnalyses []bool) bool {
+	for _, buySignal := range lastTenAnalyses {
+		if buySignal {
+			return true
+		}
+	}
+	return false
+}
+
+func checkForBuySignal() bool {
+	// Burada buy sinyali kontrolü gerçekleştirilir, ve true/false döner
+	// Eğer buy sinyali varsa true, yoksa false döner
+	// Bu işlem sizin mevcut analiz mantığınıza göre gerçekleştirilmelidir
+	return false
 }
