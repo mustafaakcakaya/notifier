@@ -3,14 +3,18 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/markcheno/go-talib"
 	"io/ioutil"
 	"net/http"
-	"net/smtp"
 	"os"
 	"strconv"
 	"time"
 )
+
+var telegramBot *tgbotapi.BotAPI
+var data *AppData
+var message string
 
 const (
 	cryptoCurrency      = "BTC"
@@ -21,65 +25,30 @@ const (
 	maxDataCount        = 80
 )
 
-var lastTenAnalyses []bool
-
 type AppData struct {
 	ClosePrices          []float64 `json:"closePrices"`
 	PreviousRsi          float64   `json:"previousRsi"`
 	LastPrice            float64   `json:"lastPrice"`
 	CurrentRsi           float64   `json:"currentRsi"`
 	LastRequestTimestamp time.Time `json:"timestamp"`
+	BotToken             string    `json:"botToken"`
+	ChatID               int64     `json:"chatID"`
 }
-
-var (
-	smtpHost     = "smtp.gmail.com"
-	smtpPort     = "587"
-	smtpUsername = "your.email@gmail.com"
-	smtpPassword = "your_password"
-)
 
 func main() {
 	//DONE: ensure data is getting from futures/binance, not spot/binance market
-	//TODO: delete sound alert.
-	//TODO: send signal alert when buy signal occurs.
+	//TODO: send telegram signal when buy condition occurs
 	//TODO: test the algorithm with futures
 	//TODO: connect to binance to auto buy and sell algorithm.
 	//TODO: write test codes.
 	PrintASCII()
 
-	data, err := loadDataFromJSON()
-	if err != nil {
-		// If the file doesn't exist or there's an error, create a new data instance
-		data = &AppData{
-			ClosePrices: []float64{},
-			PreviousRsi: 0,
-		}
-	}
+	data, _ = loadDataFromJSON()
 
-	err, closeFunc := InitAudioPlayers()
-	if err != nil {
-		return
-	}
-	defer closeFunc()
-
+	telegramBot, _ = tgbotapi.NewBotAPI(data.BotToken)
 	apiURL := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s%s", cryptoCurrency, currency)
 
 	for {
-		lastTenAnalyses = append(lastTenAnalyses, checkForBuySignal())
-
-		// limit to 10 to check last 10 signal
-		if len(lastTenAnalyses) > 10 {
-			lastTenAnalyses = lastTenAnalyses[1:]
-		}
-
-		// Eğer son 10 analizde buy sinyali yoksa e-posta gönder
-		if !containsBuySignal(lastTenAnalyses) {
-			err := sendEmail(smtpHost, smtpPort, smtpUsername, smtpPassword)
-			if err != nil {
-				fmt.Println("Error sending email:", err)
-			}
-		}
-
 		// Check if the last request was less than 15 minutes ago
 		elapsedTime := time.Since(data.LastRequestTimestamp)
 		remainingTime := requestPeriodSecond - int(elapsedTime.Seconds())
@@ -170,16 +139,20 @@ func RsiDivergenceAnalysis(rsiData []float64, price float64) {
 
 	// Check for RSI divergence
 	if currentRsi < 30 && currentRsi > previousRsi {
-		fmt.Println(fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, previousRsi, now))
-		ResumeBuyPlayer()
+		message = fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+			price, currentRsi, previousRsi, now)
+		msg := tgbotapi.NewMessage(data.ChatID, message)
+		telegramBot.Send(msg)
+		fmt.Println(message)
 	} else if currentRsi > 70 && currentRsi < previousRsi {
-		fmt.Println(fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, previousRsi, now))
+		message = fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+			price, currentRsi, previousRsi, now)
+		msg := tgbotapi.NewMessage(data.ChatID, message)
+		telegramBot.Send(msg)
+		fmt.Println(message)
 	} else {
 		fmt.Println(fmt.Sprintf("Just wait, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			price, currentRsi, previousRsi, now))
-		PausePlayers()
 	}
 
 	// Update the previousRsi variable with the current RSI value
@@ -190,15 +163,6 @@ func GetFormattedNow() string {
 	return time.Now().Format("2006-01-02 15:04:05")
 }
 
-func InitAudioPlayers() (error, func()) {
-	err := InitPlayers()
-	if err != nil {
-		fmt.Println("Error initializing audio player:", err)
-		return err, nil
-	}
-
-	return err, ClosePlayers
-}
 func PrintASCII() {
 	fmt.Println("")
 	fmt.Println(" _______                                      ______           __ __           __    __            __     __  ______  __                   \n|       \\                                    /      \\         |  \\  \\         |  \\  |  \\          |  \\   |  \\/      \\|  \\                  \n| ▓▓▓▓▓▓▓\\__    __ __    __                 |  ▓▓▓▓▓▓\\ ______ | ▓▓ ▓▓         | ▓▓\\ | ▓▓ ______  _| ▓▓_   \\▓▓  ▓▓▓▓▓▓\\\\▓▓ ______   ______  \n| ▓▓__/ ▓▓  \\  |  \\  \\  |  \\     ______     | ▓▓___\\▓▓/      \\| ▓▓ ▓▓         | ▓▓▓\\| ▓▓/      \\|   ▓▓ \\ |  \\ ▓▓_  \\▓▓  \\/      \\ /      \\ \n| ▓▓    ▓▓ ▓▓  | ▓▓ ▓▓  | ▓▓    |      \\     \\▓▓    \\|  ▓▓▓▓▓▓\\ ▓▓ ▓▓         | ▓▓▓▓\\ ▓▓  ▓▓▓▓▓▓\\\\▓▓▓▓▓▓ | ▓▓ ▓▓ \\   | ▓▓  ▓▓▓▓▓▓\\  ▓▓▓▓▓▓\\\n| ▓▓▓▓▓▓▓\\ ▓▓  | ▓▓ ▓▓  | ▓▓     \\▓▓▓▓▓▓     _\\▓▓▓▓▓▓\\ ▓▓    ▓▓ ▓▓ ▓▓         | ▓▓\\▓▓ ▓▓ ▓▓  | ▓▓ | ▓▓ __| ▓▓ ▓▓▓▓   | ▓▓ ▓▓    ▓▓ ▓▓   \\▓▓\n| ▓▓__/ ▓▓ ▓▓__/ ▓▓ ▓▓__/ ▓▓                |  \\__| ▓▓ ▓▓▓▓▓▓▓▓ ▓▓ ▓▓         | ▓▓ \\▓▓▓▓ ▓▓__/ ▓▓ | ▓▓|  \\ ▓▓ ▓▓     | ▓▓ ▓▓▓▓▓▓▓▓ ▓▓      \n| ▓▓    ▓▓\\▓▓    ▓▓\\▓▓    ▓▓                 \\▓▓    ▓▓\\▓▓     \\ ▓▓ ▓▓         | ▓▓  \\▓▓▓\\▓▓    ▓▓  \\▓▓  ▓▓ ▓▓ ▓▓     | ▓▓\\▓▓     \\ ▓▓      \n \\▓▓▓▓▓▓▓  \\▓▓▓▓▓▓ _\\▓▓▓▓▓▓▓                  \\▓▓▓▓▓▓  \\▓▓▓▓▓▓▓\\▓▓\\▓▓          \\▓▓   \\▓▓ \\▓▓▓▓▓▓    \\▓▓▓▓ \\▓▓\\▓▓      \\▓▓ \\▓▓▓▓▓▓▓\\▓▓      \n                  |  \\__| ▓▓                                                                                                               \n                   \\▓▓    ▓▓                                                                                                               \n                    \\▓▓▓▓▓▓                                                                                                                \n\n \n\tBuy - Sell Notifier uygulamasına Hoşgeldiniz!\n\n\tBu program, belirtilen kripto para birimi (bitcoin) için gerçek zamanlı fiyatları alacak,\n\tRSI (Relative Strength Index) ve Bollinger Bands analizini gerçekleştirecek,\n\tve al/sat sinyalleri verecektir.\n\n\tAnaliz sonuçları, her veri güncellemesinde ekrana yazdırılacaktır.\n\n\tAnalizden çıkmak için programı durdurabilirsiniz.\n\n\tAnaliz Başladı...\n\t")
@@ -240,29 +204,4 @@ func saveDataToJSON(data *AppData) error {
 	encoder.SetIndent("", "    ") // Format the JSON for readability
 	err = encoder.Encode(data)
 	return err
-}
-
-func sendEmail(smtpHost, smtpPort, smtpUsername, smtpPassword string) error {
-	auth := smtp.PlainAuth("", smtpUsername, smtpPassword, smtpHost)
-	to := []string{"alici.mail.adresi@gmail.com"} // E-posta alıcısı adresi
-	msg := []byte("Subject: Buy Signal Notification\n\nNo buy signals in the last 10 analyses.")
-
-	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUsername, to, msg)
-	return err
-}
-
-func containsBuySignal(lastTenAnalyses []bool) bool {
-	for _, buySignal := range lastTenAnalyses {
-		if buySignal {
-			return true
-		}
-	}
-	return false
-}
-
-func checkForBuySignal() bool {
-	// Burada buy sinyali kontrolü gerçekleştirilir, ve true/false döner
-	// Eğer buy sinyali varsa true, yoksa false döner
-	// Bu işlem sizin mevcut analiz mantığınıza göre gerçekleştirilmelidir
-	return false
 }

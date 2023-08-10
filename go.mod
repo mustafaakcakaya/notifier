@@ -8,6 +8,11 @@ require (
 )
 
 require (
+	github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible // indirect
+	github.com/technoweenie/multipartstreamer v1.0.1 // indirect
+)
+
+require (
 	github.com/bitly/go-simplejson v0.5.0 // indirect
 	github.com/faiface/beep v1.1.0 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
