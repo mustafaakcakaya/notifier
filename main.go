@@ -12,18 +12,42 @@ import (
 	"time"
 )
 
-var telegramBot *tgbotapi.BotAPI
-var data *AppData
-var message string
-
 const (
-	cryptoCurrency      = "BTC"
-	currency            = "USDT"
 	requestPeriodSecond = 1 * 60 * 15 // request every 15 min
 	rsiPeriod           = 14
 	bbPeriod            = 20
 	maxDataCount        = 80
 )
+
+type BuySellNotifier struct {
+	data         *AppData
+	telegramBot  *tgbotapi.BotAPI
+	apiUrl       string
+	pair         string
+	previousRsi  float64
+	lastRsiValue float64
+	message      string
+}
+
+func NewBuySellNotifier() (*BuySellNotifier, error) {
+	var notifier = &BuySellNotifier{
+		data: &AppData{},
+	}
+
+	err := notifier.loadDataFromJSON()
+	if err != nil {
+		panic(err)
+	}
+
+	telegramBot, err := tgbotapi.NewBotAPI(notifier.data.BotToken)
+	if err != nil {
+		return nil, err
+	}
+
+	notifier.telegramBot = telegramBot
+	notifier.apiUrl = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT"
+	return notifier, nil
+}
 
 type AppData struct {
 	ClosePrices          []float64 `json:"closePrices"`
@@ -35,121 +59,46 @@ type AppData struct {
 	ChatID               int64     `json:"chatID"`
 }
 
+//DONE: ensure data is getting from futures/binance, not spot/binance market
+//TODO: send telegram signal when buy condition occurs
+//TODO: test the algorithm with futures
+//TODO: connect to binance to auto buy and sell algorithm.
+//TODO: write test codes.
+
 func main() {
-	//DONE: ensure data is getting from futures/binance, not spot/binance market
-	//TODO: send telegram signal when buy condition occurs
-	//TODO: test the algorithm with futures
-	//TODO: connect to binance to auto buy and sell algorithm.
-	//TODO: write test codes.
 	PrintASCII()
 
-	data, _ = loadDataFromJSON()
-
-	telegramBot, _ = tgbotapi.NewBotAPI(data.BotToken)
-	apiURL := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s%s", cryptoCurrency, currency)
-
-	for {
-		// Check if the last request was less than 15 minutes ago
-		elapsedTime := time.Since(data.LastRequestTimestamp)
-		remainingTime := requestPeriodSecond - int(elapsedTime.Seconds())
-
-		// If less than 15 minutes ago, wait for the remaining time
-		if remainingTime > 0 {
-			fmt.Printf("Waiting %d seconds before making the next request...\n", remainingTime)
-			time.Sleep(time.Duration(remainingTime) * time.Second)
-		}
-
-		// Make a GET request to Binance API
-		resp, err := http.Get(apiURL)
-		if err != nil {
-			fmt.Println("Error fetching data:", err)
-			return
-		}
-		defer resp.Body.Close()
-
-		// Read the response body
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Println("Error reading response:", err)
-			return
-		}
-
-		// Unmarshal the JSON response
-		var tickerData struct {
-			LastPrice string `json:"lastPrice"`
-		}
-		if err := json.Unmarshal(body, &tickerData); err != nil {
-			fmt.Println("Error decoding JSON:", err)
-			return
-		}
-
-		// Parse the last price as a float64
-		lastPrice, err := strconv.ParseFloat(tickerData.LastPrice, 64)
-		if err != nil {
-			fmt.Println("Error parsing last price:", err)
-			return
-		}
-
-		// Perform analysis and print results
-		if len(data.ClosePrices) >= rsiPeriod && len(data.ClosePrices) >= bbPeriod {
-			// RSI calculation
-			rsiData := talib.Rsi(data.ClosePrices, rsiPeriod)
-
-			// RSI Divergence analysis:
-			RsiDivergenceAnalysis(rsiData, lastPrice)
-
-			// Update currentRsi and lastPrice in the data struct
-			data.CurrentRsi = rsiData[len(rsiData)-1]
-			data.LastPrice = lastPrice
-
-		} else {
-			fmt.Printf("Collecting Data... btc price: %.2f, time: %s\n", lastPrice, GetFormattedNow())
-		}
-
-		// Update the data with the current timestamp
-		data.LastRequestTimestamp = time.Now()
-		// Update the data with the current values
-		data.ClosePrices = append(data.ClosePrices, lastPrice)
-		data.PreviousRsi = previousRsi
-
-		// Limit closePrices to closePriceLimit elements
-		if len(data.ClosePrices) > maxDataCount {
-			data.ClosePrices = data.ClosePrices[len(data.ClosePrices)-maxDataCount:]
-		}
-
-		// Save the updated data to the JSON file
-		e := saveDataToJSON(data)
-		if e != nil {
-			fmt.Println("Error saving data to JSON:", err)
-		}
-
-		// Wait for a few seconds before making the next request
-		time.Sleep(requestPeriodSecond * time.Second)
+	notifier, err := NewBuySellNotifier()
+	if err != nil {
+		fmt.Println("Error creating notifier:", err)
+		return
 	}
+
+	notifier.Start()
 }
 
 var previousRsi float64 // Variable to store the last printed RSI value
 
-func RsiDivergenceAnalysis(rsiData []float64, price float64) {
+func (bsn *BuySellNotifier) RsiDivergenceAnalysis(rsiData []float64, price float64) {
 	// Get the current RSI value
 	currentRsi := rsiData[len(rsiData)-1]
 
 	// Get the current time
-	now := GetFormattedNow()
+	now := bsn.GetFormattedNow()
 
 	// Check for RSI divergence
 	if currentRsi < 30 && currentRsi > previousRsi {
-		message = fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+		bsn.message = fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			price, currentRsi, previousRsi, now)
-		msg := tgbotapi.NewMessage(data.ChatID, message)
-		telegramBot.Send(msg)
-		fmt.Println(message)
+		msg := tgbotapi.NewMessage(bsn.data.ChatID, bsn.message)
+		bsn.telegramBot.Send(msg)
+		fmt.Println(bsn.message)
 	} else if currentRsi > 70 && currentRsi < previousRsi {
-		message = fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+		bsn.message = fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			price, currentRsi, previousRsi, now)
-		msg := tgbotapi.NewMessage(data.ChatID, message)
-		telegramBot.Send(msg)
-		fmt.Println(message)
+		msg := tgbotapi.NewMessage(bsn.data.ChatID, bsn.message)
+		bsn.telegramBot.Send(msg)
+		fmt.Println(bsn.message)
 	} else {
 		fmt.Println(fmt.Sprintf("Just wait, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			price, currentRsi, previousRsi, now))
@@ -158,8 +107,93 @@ func RsiDivergenceAnalysis(rsiData []float64, price float64) {
 	// Update the previousRsi variable with the current RSI value
 	previousRsi = currentRsi
 }
+func (bsn *BuySellNotifier) Start() {
+	fmt.Println("Analiz Başladı...")
+	for {
+		elapsedTime := time.Since(bsn.data.LastRequestTimestamp)
+		remainingTime := requestPeriodSecond - int(elapsedTime.Seconds())
 
-func GetFormattedNow() string {
+		if remainingTime > 0 {
+			fmt.Printf("Waiting %d seconds before making the next request...\n", remainingTime)
+			time.Sleep(time.Duration(remainingTime) * time.Second)
+		}
+
+		bsn.PerformAnalysis()
+		bsn.SaveData()
+
+		time.Sleep(requestPeriodSecond * time.Second)
+	}
+}
+
+func (bsn *BuySellNotifier) SaveData() {
+	// Save the updated data to the JSON file
+	err := bsn.saveDataToJSON(bsn.data)
+	if err != nil {
+		fmt.Println("Error saving data to JSON:", err)
+	}
+}
+
+func (bsn *BuySellNotifier) PerformAnalysis() {
+	// Make a GET request to Binance API
+	resp, err := http.Get(bsn.apiUrl)
+	if err != nil {
+		fmt.Println("Error fetching data:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return
+	}
+
+	// Unmarshal the JSON response
+	var tickerData struct {
+		LastPrice string `json:"lastPrice"`
+	}
+	if err := json.Unmarshal(body, &tickerData); err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		return
+	}
+
+	// Parse the last price as a float64
+	lastPrice, err := strconv.ParseFloat(tickerData.LastPrice, 64)
+	if err != nil {
+		fmt.Println("Error parsing last price:", err)
+		return
+	}
+
+	// Perform analysis and print results
+	if len(bsn.data.ClosePrices) >= rsiPeriod && len(bsn.data.ClosePrices) >= bbPeriod {
+		// RSI calculation
+		rsiData := talib.Rsi(bsn.data.ClosePrices, rsiPeriod)
+
+		// RSI Divergence analysis:
+		bsn.RsiDivergenceAnalysis(rsiData, lastPrice)
+
+		// Update currentRsi and lastPrice in the data struct
+		bsn.data.CurrentRsi = rsiData[len(rsiData)-1]
+		bsn.data.LastPrice = lastPrice
+
+	} else {
+		fmt.Printf("Collecting Data... btc price: %.2f, time: %s\n", lastPrice, bsn.GetFormattedNow())
+	}
+
+	// Update the data with the current timestamp
+	bsn.data.LastRequestTimestamp = time.Now()
+	// Update the data with the current values
+	bsn.data.ClosePrices = append(bsn.data.ClosePrices, lastPrice)
+	bsn.data.PreviousRsi = bsn.previousRsi
+
+	// Limit closePrices to closePriceLimit elements
+	if len(bsn.data.ClosePrices) > maxDataCount {
+		bsn.data.ClosePrices = bsn.data.ClosePrices[len(bsn.data.ClosePrices)-maxDataCount:]
+	}
+}
+
+func (bsn *BuySellNotifier) GetFormattedNow() string {
 	return time.Now().Format("2006-01-02 15:04:05")
 }
 
@@ -170,30 +204,27 @@ func PrintASCII() {
 	fmt.Println("")
 }
 
-// Function to load data from the JSON file
-func loadDataFromJSON() (*AppData, error) {
-	data := &AppData{}
+func (bsn *BuySellNotifier) loadDataFromJSON() error {
 	file, err := os.Open("data.json")
 	if err != nil {
-		return data, err
+		return err
 	}
 	defer file.Close()
 
 	byteValue, err := ioutil.ReadAll(file)
 	if err != nil {
-		return data, err
+		return err
 	}
 
-	err = json.Unmarshal(byteValue, data)
+	err = json.Unmarshal(byteValue, &bsn.data)
 	if err != nil {
-		return data, err
+		return err
 	}
 
-	return data, nil
+	return nil
 }
 
-// Function to save data to the JSON file and append data if the file already exists
-func saveDataToJSON(data *AppData) error {
+func (bsn *BuySellNotifier) saveDataToJSON(data *AppData) error {
 	file, err := os.Create("data.json")
 	if err != nil {
 		return err
