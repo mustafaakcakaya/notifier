@@ -3,13 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
-	"github.com/markcheno/go-talib"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/markcheno/go-talib"
 )
 
 const (
@@ -17,7 +18,15 @@ const (
 	rsiPeriod           = 14
 	bbPeriod            = 20
 	maxDataCount        = 80
+	telegramBotId = "qwerty"
+	chatId = 1
 )
+
+type OpenOrder struct {
+	OpeningPrice float64
+	OrderType    string
+	Leverage     int
+}
 
 type BuySellNotifier struct {
 	data         *AppData
@@ -27,6 +36,17 @@ type BuySellNotifier struct {
 	previousRsi  float64
 	lastRsiValue float64
 	message      string
+	OpenOrders   map[string]OpenOrder
+}
+
+type AppData struct {
+	ClosePrices          []float64 `json:"closePrices"`
+	PreviousRsi          float64   `json:"previousRsi"`
+	LastPrice            float64   `json:"lastPrice"`
+	CurrentRsi           float64   `json:"currentRsi"`
+	LastRequestTimestamp time.Time `json:"timestamp"`
+	BotToken             string    `json:"botToken"`
+	ChatID               int64     `json:"chatID"`
 }
 
 func NewBuySellNotifier() (*BuySellNotifier, error) {
@@ -39,25 +59,19 @@ func NewBuySellNotifier() (*BuySellNotifier, error) {
 		panic(err)
 	}
 
-	telegramBot, err := tgbotapi.NewBotAPI(notifier.data.BotToken)
+	telegram, err := tgbotapi.NewBotAPI(telegramBotId)
+
 	if err != nil {
 		return nil, err
 	}
+	notifier.OpenOrders = make(map[string]OpenOrder)
 
-	notifier.telegramBot = telegramBot
+	notifier.telegramBot = telegram
 	notifier.apiUrl = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT"
 	return notifier, nil
 }
 
-type AppData struct {
-	ClosePrices          []float64 `json:"closePrices"`
-	PreviousRsi          float64   `json:"previousRsi"`
-	LastPrice            float64   `json:"lastPrice"`
-	CurrentRsi           float64   `json:"currentRsi"`
-	LastRequestTimestamp time.Time `json:"timestamp"`
-	BotToken             string    `json:"botToken"`
-	ChatID               int64     `json:"chatID"`
-}
+
 
 //DONE: ensure data is getting from futures/binance, not spot/binance market
 //TODO: send telegram signal when buy condition occurs
@@ -82,31 +96,48 @@ var previousRsi float64 // Variable to store the last printed RSI value
 func (bsn *BuySellNotifier) RsiDivergenceAnalysis(rsiData []float64, price float64) {
 	// Get the current RSI value
 	currentRsi := rsiData[len(rsiData)-1]
-
+	pair := "BTCUSDT"
 	// Get the current time
 	now := bsn.GetFormattedNow()
 
 	// Check for RSI divergence
-	if currentRsi < 30 && currentRsi > previousRsi {
-		bsn.message = fmt.Sprintf("Buy signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, previousRsi, now)
-		msg := tgbotapi.NewMessage(bsn.data.ChatID, bsn.message)
-		bsn.telegramBot.Send(msg)
-		fmt.Println(bsn.message)
-	} else if currentRsi > 70 && currentRsi < previousRsi {
-		bsn.message = fmt.Sprintf("Sell signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			price, currentRsi, previousRsi, now)
-		msg := tgbotapi.NewMessage(bsn.data.ChatID, bsn.message)
-		bsn.telegramBot.Send(msg)
-		fmt.Println(bsn.message)
+	isLong := currentRsi < 30 && previousRsi > 0 && currentRsi > previousRsi
+	isShort := currentRsi > 70 && previousRsi > 0 && currentRsi < previousRsi
+	val, exist := bsn.OpenOrders[pair]
+	if isLong {
+		if exist {
+			if val.OrderType == "SHORT" {
+				bsn.closeOrder(pair, price, currentRsi, previousRsi)
+				fmt.Println(bsn.OpenOrders)
+			}
+		} else {
+			bsn.openOrder(pair, "LONG", price, currentRsi, previousRsi)
+			fmt.Println(bsn.OpenOrders)
+		}
+	} else if isShort {
+		if exist {
+			if val.OrderType == "LONG" {
+				bsn.closeOrder(pair, price, currentRsi, previousRsi)
+				fmt.Println(bsn.OpenOrders)
+			}
+
+		} else {
+			bsn.openOrder(pair, "SHORT", price, currentRsi, previousRsi)
+			fmt.Println(bsn.OpenOrders)
+		}
 	} else {
 		fmt.Println(fmt.Sprintf("Just wait, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			price, currentRsi, previousRsi, now))
+		_, exist := bsn.OpenOrders[pair]
+		if exist {
+			bsn.isLiq(price, pair)
+		}
 	}
 
 	// Update the previousRsi variable with the current RSI value
 	previousRsi = currentRsi
 }
+
 func (bsn *BuySellNotifier) Start() {
 	fmt.Println("Analiz Başladı...")
 	for {
@@ -235,4 +266,62 @@ func (bsn *BuySellNotifier) saveDataToJSON(data *AppData) error {
 	encoder.SetIndent("", "    ") // Format the JSON for readability
 	err = encoder.Encode(data)
 	return err
+}
+
+func (bsn *BuySellNotifier) openOrder(pair string, orderType string, price float64, currentRsi float64, previousRsi float64) {
+	now := GetFormattedNow()
+	message := fmt.Sprintf("%s signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+		orderType, price, currentRsi, previousRsi, now)
+	fmt.Println(message)
+	bsn.sendMessageToTelegram(message)
+	openOrder := OpenOrder{OrderType: orderType, OpeningPrice: price, Leverage: 20}
+	bsn.sendMessageToTelegram(message)
+	message = fmt.Sprintf("%s Order Opened opening price %.2f", orderType, price)
+	fmt.Println(message)
+	bsn.sendMessageToTelegram(message)
+	bsn.OpenOrders[pair] = openOrder
+}
+
+func (bsn *BuySellNotifier) closeOrder(pair string, price float64, currentRsi float64, previousRsi float64) {
+	openOrder := bsn.OpenOrders[pair]
+	reverseOrder := reverseOrder(bsn.OpenOrders[pair].OrderType)
+	now := GetFormattedNow()
+	message := fmt.Sprintf("%s signal, btc price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
+		reverseOrder, price, currentRsi, previousRsi, now)
+	fmt.Println(message)
+	bsn.sendMessageToTelegram(message)
+	percentageDiff := float64(openOrder.Leverage) * (openOrder.OpeningPrice*100/(price) - 100)
+	message = fmt.Sprintf("%s Order Closed opening price %.2f, closing price %.2f percentage diff %.2f", openOrder.OrderType, openOrder.OpeningPrice, price, percentageDiff)
+	fmt.Println(message)
+	bsn.sendMessageToTelegram(message)
+	delete(bsn.OpenOrders, pair)
+}
+
+func reverseOrder(orderType string) string {
+	if orderType == "LONG" {
+		return "SHORT"
+	}
+	return "LONG"
+}
+
+func (bsn *BuySellNotifier) isLiq(price float64, pair string) {
+	openOrder := bsn.OpenOrders[pair]
+	now := GetFormattedNow()
+	percentageDiff := float64(openOrder.Leverage) * (openOrder.OpeningPrice*100/(price) - 100)
+	if percentageDiff > 100 || percentageDiff < -100 {
+		message := fmt.Sprintf("You Are Liq, order %s opening price: %.2f, current price: %.2f, percentage diff: %.2f, time: %s",
+			openOrder.OrderType, openOrder.OpeningPrice, price, percentageDiff, now)
+		fmt.Println(message)
+		bsn.sendMessageToTelegram(message)
+		delete(bsn.OpenOrders, pair)
+		fmt.Println(bsn.OpenOrders)
+	}
+}
+
+func (bsn *BuySellNotifier) sendMessageToTelegram(message string) {
+	bsn.telegramBot.Send(tgbotapi.NewMessage(chatId, fmt.Sprintf("%s", message)))
+}
+
+func GetFormattedNow() string {
+	return time.Now().Format("2006-01-02 15:04:05")
 }
