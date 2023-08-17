@@ -1,9 +1,6 @@
 # macOS
 **/.DS_Store
 
-#data files
-data.json
-
 # Dev build
 build/
 tmp/
