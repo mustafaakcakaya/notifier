@@ -15,7 +15,8 @@ FROM gcr.io/distroless/base-debian10
 
 WORKDIR /
 
-COPY --from=build ./ /notifier
+COPY --from=build /notifier /notifier
+COPY --from=build /app/data /data
 
 USER nonroot:nonroot
 
