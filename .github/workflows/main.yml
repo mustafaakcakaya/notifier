@@ -2,7 +2,7 @@
 name: Build and Push Notifier to AWS ECR
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
 jobs:
   build-and-push:
     name: Build and Push Notifier to ECR
