@@ -13,9 +13,14 @@ type BuySellNotifier struct {
 	telegramBot  *tgbotapi.BotAPI
 	apiUrl       string
 	pair         string
-	previousRsi  float64
 	lastRsiValue float64
 	message      string
+	OpenOrders   map[string]OpenOrder
+}
+type OpenOrder struct {
+	OpeningPrice float64
+	OrderType    string
+	Leverage     int
 }
 
 type AppData struct {

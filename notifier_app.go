@@ -37,27 +37,46 @@ func (bsn *BuySellNotifier) RsiDivergenceAnalysis(rsiData []float64, price float
 	// Get the current time
 	now := bsn.GetFormattedNow()
 
+	isLong := currentRsi < 30 && bsn.data.PreviousRsi > 0 && currentRsi > bsn.data.PreviousRsi
+	isShort := currentRsi > 70 && bsn.data.PreviousRsi > 0 && currentRsi < bsn.data.PreviousRsi
+
+	val, exist := bsn.OpenOrders[bsn.pair]
+
 	// Check for RSI divergence
-	if currentRsi < 30 && currentRsi > bsn.data.PreviousRsi {
-		bsn.message = fmt.Sprintf("Buy signal, %s price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			bsn.pair, price, currentRsi, bsn.data.PreviousRsi, now)
-		msg := tgbotapi.NewMessage(bsn.config.ChatID, bsn.message)
-		bsn.telegramBot.Send(msg)
-		fmt.Println(bsn.message)
-	} else if currentRsi > 70 && currentRsi < bsn.data.PreviousRsi {
-		bsn.message = fmt.Sprintf("Sell signal, %s price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
-			bsn.pair, price, currentRsi, bsn.data.PreviousRsi, now)
-		msg := tgbotapi.NewMessage(bsn.config.ChatID, bsn.message)
-		bsn.telegramBot.Send(msg)
-		fmt.Println(bsn.message)
+	if isLong {
+		if exist {
+			if val.OrderType == "SHORT" {
+				bsn.closeOrder(bsn.pair, price, currentRsi, bsn.data.PreviousRsi)
+				fmt.Println(bsn.OpenOrders)
+			}
+		} else {
+			bsn.openOrder(bsn.pair, "LONG", price, currentRsi, bsn.data.PreviousRsi)
+			fmt.Println(bsn.OpenOrders)
+		}
+	} else if isShort {
+		if exist {
+			if val.OrderType == "LONG" {
+				bsn.closeOrder(bsn.pair, price, currentRsi, bsn.data.PreviousRsi)
+				fmt.Println(bsn.OpenOrders)
+			}
+
+		} else {
+			bsn.openOrder(bsn.pair, "SHORT", price, currentRsi, bsn.data.PreviousRsi)
+			fmt.Println(bsn.OpenOrders)
+		}
 	} else {
 		fmt.Println(fmt.Sprintf("Just wait, %s price: %.2f, currentRsi: %.2f, previousRsi: %.2f, time: %s",
 			bsn.pair, price, currentRsi, bsn.data.PreviousRsi, now))
+		_, exist := bsn.OpenOrders[bsn.pair]
+		if exist {
+			bsn.isLiq(price, bsn.pair)
+		}
 	}
 
 	// Update the previousRsi variable with the current RSI value
 	bsn.data.PreviousRsi = currentRsi
 }
+
 func (bsn *BuySellNotifier) Start() {
 	for {
 		bsn.WaitBeforeNextRequest()
@@ -69,6 +88,10 @@ func (bsn *BuySellNotifier) Start() {
 	}
 }
 
+func (bsn *BuySellNotifier) sendMessageToTelegram() {
+	bsn.telegramBot.Send(tgbotapi.NewMessage(bsn.config.ChatID, fmt.Sprintf("%s", bsn.message)))
+}
+
 func (bsn *BuySellNotifier) WaitBeforeNextRequest() {
 	elapsedTime := time.Since(bsn.data.LastRequestTimestamp)
 	remainingTime := requestPeriodSecond - int(elapsedTime.Seconds())
@@ -78,6 +101,7 @@ func (bsn *BuySellNotifier) WaitBeforeNextRequest() {
 		time.Sleep(time.Duration(remainingTime) * time.Second)
 	}
 }
+
 func (bsn *BuySellNotifier) PerformAnalysis() {
 	// Make a GET request to Binance API
 	lastPrice, err := GetPrice(bsn.apiUrl)
@@ -99,7 +123,7 @@ func (bsn *BuySellNotifier) PerformAnalysis() {
 		bsn.data.LastPrice = lastPrice
 
 	} else {
-		fmt.Printf("Collecting Data... btc price: %.2f, time: %s\n", lastPrice, bsn.GetFormattedNow())
+		fmt.Printf("Collecting Data... %s price: %.2f, time: %s\n", bsn.pair, lastPrice, bsn.GetFormattedNow())
 	}
 
 	// Update the data with the current timestamp
